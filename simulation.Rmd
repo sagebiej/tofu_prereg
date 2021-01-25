@@ -1,0 +1,262 @@
+---
+title: "Pre-Registration and Simulation"
+author: "Julian"
+date: "12/7/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+t<- knitr::opts_chunk$set(echo = TRUE)
+source("functions/help_functions.R")
+```
+
+# Introduction
+
+This document has two purposes. First, it simulates the data for the preregistration at OFS with ID XXX, and second, it describes and exemplifies the analysis of the data as described in the preregistration. The document contains the r code for the simulation and the analysis, and provides details on each step. The user is free to change some parameters and values to inspect the limits of the design. Here, we simulate the data with a rather small sample size and realistic parameter values. While this html file is static, all required files to replicate and adapt this simulation are stored on github under the link
+
+
+# Preparation and base dataset
+
+In the following R chunk, we read in all packages needed (including noting down their versions). It also reads in functions written by the authors to automate the simulation and read in the data. The functions are stored under "functions/help_functions.R". Further, it generates objects which will be used to store runs from each run in the simulation. 
+
+```{r prep}
+
+rm(list = ls())
+
+
+library("dplyr")          
+library("evd")           
+library("boot")
+library("apollo")
+library("sjlabelled")
+library("readxl")
+library("httr")
+library("ggplot2")
+library("tidyr")
+library("magrittr")
+library("psych")
+dce_data <- read_excel("simulated_data/tofu_main_301020_sim02_tofu_WithoutBranch.xlsx")
+dce_dictionary <- read_excel("simulated_data/tofu_main_301020_sim02_tofu_WithoutBranch.xlsx", sheet = "dictionary")
+
+
+source("functions/help_functions.R") 
+
+
+models=list()
+results <- data.frame()
+
+sessionInfo()
+```
+
+
+
+Next we define the utility weights and the utility function. In this case, we simulate data for a conditional logit model, with no observed or unobserved heterogeneity. All attributes but cost are dummy coded and parameter values for the simulation are derived from a previous study. We also define the sample size (i.e. how many replications for the simulation) and create further objects containing the number of blocks, choice sets etc. 
+
+```{r}
+results <- data.frame()
+
+# Setting the beta for utility function 
+basc = -2
+bcost = -0.05
+bmanufEU = -0.4
+bmanufnonEU = -1
+bcultEU = -0.2
+bcultnonEU = -0.4
+bCONV = -0.4
+
+
+
+# Simulate reveaved preferences
+respondents <-100
+no_sim <- 3
+
+nsets <- length(unique(dce_data$SCENARIO))
+nblocks <- 1
+#max(dce_data$Block)
+
+setpp <- nsets/nblocks
+
+``` 
+
+We will now create the base dataset. It contains all factors as well as the deterministic utility values of each alternative. This dataset can be used as the basis for the simulation. It does not contain choices, as choices are subject to a random variable. For each run of the simulation, new random variables will be generated.
+
+``` {r}
+
+  database <-  dce_data%>% 
+    slice(rep(row_number(), 2)) %>%  
+ mutate(RID = rep(1:respondents, each=nsets)) %>% 
+    group_by(RID) %>% 
+    mutate(across(matches("._x3$") , ~ .x - 1 ) ) %>% 
+    mutate(a1_manuf_EU = a1_x1==2, a1_manuf_nonEU = a1_x1==3 , a2_manuf_EU = a2_x1==2, a2_manuf_nonEU = a2_x1==3 ,
+           a1_cult_EU = a1_x2==2, a1_cult_nonEU = a1_x2==3 , a2_cult_EU = a2_x2==2, a2_cult_nonEU = a2_x2==3 ,
+           across(matches("._x4$") ,  ~ recode(  .x ,`1` = 15,`2` = 20  , `3` = 25 , `4` = 30 , `5` = 35 , `6` = 40 , `7` = 50 , `8` = 60 , .default =99999)),
+                    V.1 =  bcost*a1_x4 + bmanufEU*a1_manuf_EU + bmanufnonEU*a1_manuf_nonEU + bcultEU*a1_cult_EU + bcultnonEU*a1_cult_nonEU + bCONV*a1_x3 , 
+           V.2 = bcost*a2_x4 + bmanufEU*a2_manuf_EU + bmanufnonEU*a2_manuf_nonEU + bcultEU*a2_cult_EU + bcultnonEU*a2_cult_nonEU + bCONV*a2_x3  ,
+           V.3 = basc ,  
+    )   %>% 
+    as.data.frame()
+  
+
+  
+ rm(list = grep(x= ls() , pattern = "^b" , value = TRUE))
+   
+``` 
+
+# Simulation
+The next steps are a loop, which replicates the simulation the desired number of times. Replicating the simulation allows us to investigate if our estimates are unbiased. 
+Within the loop we are generating the choices and estimate a conditional logit model with the package apollo. 
+
+
+```{r}
+
+for (i in 1:no_sim) {
+  database <-  database%>% 
+    group_by(RID) %>% 
+        mutate(
+           e.1 = rgumbel(setpp,loc=0, scale=1) ,
+           e.2 = rgumbel(setpp,loc=0, scale=1) ,
+           e.3 = rgumbel(setpp,loc=0, scale=1) ,
+           U.1 = V.1 + e.1 ,
+           U.2 = V.2 + e.2 ,
+           U.3 = V.3 + e.3 
+    )   %>% 
+    as.data.frame()
+  
+  # Preferences derived from utility
+  database$pref1 <- max.col(database[,c("U.1" , "U.2" , "U.3" )])
+
+apollo_initialise()
+  
+  
+  modelOutput_settings = list(printPVal=T)
+  
+  ### Set core controls
+  apollo_control = list(
+    modelName  ="Simulated Data Tofu",
+    modelDescr ="Simple MNL model",
+    indivID    ="RID"
+  )
+  
+  
+  apollo_beta=c(basc = 1.2,
+bcost = 0.2,
+bmanufEU = -0.4,
+bmanufnonEU = -1,
+bcultEU = -0.2,
+bcultnonEU = -0.4,
+bCONV = -0.4)
+  
+  
+  ### keine Parameter fix halten
+  apollo_fixed = c()
+  
+  ### validieren
+  apollo_inputs = apollo_validateInputs()
+  
+  
+  apollo_probabilities=function(apollo_beta, apollo_inputs, functionality="estimate"){
+    
+    ### Function initialisation: do not change the following three commands
+    ### Attach inputs and detach after function exit
+    apollo_attach(apollo_beta, apollo_inputs)
+    on.exit(apollo_detach(apollo_beta, apollo_inputs))
+    
+    ### Create list of probabilities P
+    P = list()
+    
+    ### List of utilities (later integrated in mnl_settings below)
+    V = list()
+    V[['alt1']] =  bcost*a1_x4 + bmanufEU*a1_manuf_EU + bmanufnonEU*a1_manuf_nonEU + bcultEU*a1_cult_EU + bcultnonEU*a1_cult_nonEU + bCONV*a1_x3 
+    V[['alt2']] = bcost*a2_x4 + bmanufEU*a2_manuf_EU + bmanufnonEU*a2_manuf_nonEU + bcultEU*a2_cult_EU + bcultnonEU*a2_cult_nonEU + bCONV*a2_x3    
+    V[['alt3']] = basc
+
+    
+    
+    ### Define settings for MNL model component
+    mnl_settings = list(
+      alternatives  = c(alt1=1, alt2=2, alt3=3) ,
+      avail         = 1, # all alternatives are available in every choice
+      choiceVar     = pref1,
+      V             = V  # tell function to use list vector defined above
+      
+    )
+    
+    ### Compute probabilities using MNL model
+    P[['model']] = apollo_mnl(mnl_settings, functionality)
+    
+    ### Take product across observation for same individual
+    P = apollo_panelProd(P, apollo_inputs, functionality)
+    
+    ### Average across inter-individual draws - nur bei Mixed Logit!
+    ### P = apollo_avgInterDraws(P, apollo_inputs, functionality)
+    
+    ### Prepare and return outputs of function
+    P = apollo_prepareProb(P, apollo_inputs, functionality)
+    return(P)
+  }
+  
+  
+  model = apollo_estimate(apollo_beta, apollo_fixed,
+                          apollo_probabilities, apollo_inputs, 
+                          estimate_settings=list(hessianRoutine="maxLik"))
+  
+  apollo_modelOutput(model)
+  
+  models[[i]]=model
+  
+paras <- length(model$estimate)*2
+  
+  results[i,1:paras]<-apollo_modelOutput(model)[,1:2]
+  
+  if (i==1) {
+    names(results) <- c(rownames(apollo_modelOutput(model)) ,paste0("se_",rownames(apollo_modelOutput(model))))
+  }  
+  
+} # end of loop
+```
+
+  
+  
+# Simulation results and Post estimation
+
+The results are stored in the object `results`. Looking at the summary table allows us to inspect the accuracy and biasedness. 
+  
+
+```{r}
+
+#inspect any abritrary model
+modelOutput_settings = list(printPVal=T)
+
+apollo_modelOutput(models[[3]] , modelOutput_settings)
+
+
+describe(results, fast = TRUE)
+
+
+# basc = 1.2
+# bcost = 0.05
+# bmanufEU = -0.4
+# bmanufnonEU = -1
+# bcultEU = -0.2
+# bcultnonEU = -0.4
+# bCONV = -0.4
+```
+  
+
+
+Next, we can estimate WTP values. These are not relevant to inspect the model, but help to interpret the parameters better. We do that only for the last model
+
+
+
+```{r}
+
+wtp("bcost", names(model$estimate), model=model)
+
+
+
+```
+
+
+
+
+

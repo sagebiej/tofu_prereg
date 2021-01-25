@@ -1,0 +1,173 @@
+---
+title: "Analysis Pilot Study"
+author: "Julian Sagebiel"
+date: "1/22/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list = ls())
+modelOutput_settings = list(printPVal=T)
+
+library("dplyr")
+library("boot")
+library("apollo")
+library("sjlabelled")
+library("readxl")
+library("httr")
+library("ggplot2")
+library("tidyr")
+library("magrittr")
+library("psych")
+library("kableExtra")
+library("stringr")
+library("zoo")
+library("janitor")
+library("labelled")
+
+source("functions/help_functions.R") 
+
+
+```
+
+# Introduction
+
+ This file presents results from the pilot survey. It focuses on the choice experiment and is used to validate the design for the main study. The main study is about to be launched on 2nd February 2021.
+
+Note the following:
+
+split =1 -- Environmental Treatment
+
+split = 2 -- Health treatment
+
+split = 3 -- Recipe Treatment
+
+split = 4 -- Baseline
+
+
+# Preparation and base dataset
+
+In the following R chunk, we read in all packages needed (including noting down their versions) and datasets, similar to the simulation
+
+```{r prep}
+
+
+dce_data <- ass_labels("pilotdata/tofu_main_swe_tofu.xlsx", seelab = FALSE)  #this function uses the labelled package to assign labels to the variables, helping to quickly grasp the content of the variables and values
+cov_data <- ass_labels("pilotdata/tofu_main_swe_covariates.xlsx" , seelab = FALSE)
+
+
+
+
+
+```
+
+
+
+We now prepare the data for the choice models and merge with the covariate datasets.
+
+``` {r}
+
+  fulldata <-  dce_data%>% 
+    group_by(RID) %>% 
+    mutate(across(matches("._x3$") , ~ .x - 1 ) ) %>% 
+    mutate(a1_manuf_EU = a1_x1==2, a1_manuf_nonEU = a1_x1==3 , a2_manuf_EU = a2_x1==2, a2_manuf_nonEU = a2_x1==3 ,
+           a1_cult_EU = a1_x2==2, a1_cult_nonEU = a1_x2==3 , a2_cult_EU = a2_x2==2, a2_cult_nonEU = a2_x2==3 ,
+           across(matches("._x4$") ,  ~ dplyr::recode(  .x ,`1` = 15,`2` = 20  , `3` = 25 , `4` = 30 , `5` = 35 , `6` = 40 , `7` = 50 , `8` = 60 , .default =99999, .keep_value_labels = TRUE)) )   %>% 
+  left_join(cov_data, by = "RID")  %>% 
+  filter(STATUS==7) %>% 
+    as.data.frame()
+
+``` 
+
+
+# Descriptives
+
+Here, we plot some relevant desciptive statistics. The first table shows the frequency of choices for each alternative. Then we create a new dataframe in long format, so that we can plot conditional choice probabilites, i.e. the probability to choose an alternative, given a certain attribute.
+
+```{r}
+
+  barplot(prop.table(table(fulldata$pref1)), ylim = c(0,1))
+
+
+long= dce_data %>% rename_with( ~ paste0(.,"_",str_extract(.,"._" )), starts_with("a") )%>% 
+  rename_with( ~ sub("^..." , "", .), starts_with("a")) %>% 
+  pivot_longer(matches("^x"), names_to = c(".value", "set"), names_sep = "_") %>% mutate(set=as.numeric(set), choice=pref1==set, across(starts_with("x"),  ~if_else(set==3,0,.) )  )
+
+
+
+```
+
+```{r}
+for (att in c("x1","x2","x3","x4")) {
+  
+
+
+plot(aggregate(as.numeric(choice)==1 ~ get(att) , data=long , mean), type="o", main=att, ylim=0:1)
+
+}
+
+
+```
+
+
+
+# Estimation of conditional logit model
+
+Here, we estimate a conditional logit model with all respondents and calculate Willingness to pay. Then we do the same for each split sample. Before presenting the results, everything is stored in objects.
+
+``` {r}
+
+database<-remove_all_labels(fulldata)  #labels need to be removed to estimate models in apollo
+fullmodel <-mnl() 
+
+wtp_fullmodel <-wtp("bcost", names(fullmodel$estimate), model=fullmodel)
+
+database_orig <-database
+
+
+wtp_split=list()
+model_split=list()
+
+
+for (spl in unique(database_orig$split)) {
+  
+
+database <- database_orig %>%  filter(split==spl)
+
+model_split[[spl]] <- mnl()
+
+wtp_split[[spl]] <- wtp("bcost", names(model_split[[spl]]$estimate), model=model_split[[spl]])
+
+
+}
+  
+
+```
+
+  
+  
+
+
+
+
+```{r}
+apollo_modelOutput(fullmodel, modelOutput_settings)
+
+cat("\n Results for full sample \n")
+
+kable(wtp_fullmodel,digits = 2 , format = "simple" )
+
+cat("\n Results for the splits in the order split =1 -- Environmental Treatment
+
+split = 2 -- Health treatment
+
+split = 3 -- Recipe Treatment
+
+split = 4 -- Baseline \n")
+
+kable(wtp_split,digits = 2 , format = "simple" )
+```
+
+We can see that 
